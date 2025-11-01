@@ -7,8 +7,8 @@ st.set_page_config(page_title="Multi-Profile Investment Dashboard", layout="wide
 
 st.title("💼 Multi-Profile Investment Dashboard")
 st.markdown(
-    "This app contains three sample portfolios (Low, Moderate, High risk) based on the data you provided. "
-    "Choose a profile, edit values inline, normalize allocations, filter, and export as CSV."
+    "This app contains three sample portfolios (Low, Moderate, High risk). "
+    "Choose a profile, upload CSV to replace it, edit values, normalize allocations, and export as CSV."
 )
 
 # ---------------------------
@@ -70,7 +70,6 @@ HIGH_DATA = {
     "Allocation (%)": [50, 15, 10, 7, 5, 5, 3, 3, 1, 1]
 }
 
-# Convert to DataFrames
 df_profiles = {
     "Low Risk Profile": pd.DataFrame(LOW_DATA),
     "Moderate Risk Profile": pd.DataFrame(MODERATE_DATA),
@@ -78,7 +77,7 @@ df_profiles = {
 }
 
 # ---------------------------
-# Sidebar - profile + upload
+# Sidebar - profile selection + upload
 # ---------------------------
 st.sidebar.header("Profile & Data")
 selected_profile = st.sidebar.selectbox("Choose portfolio profile", list(df_profiles.keys()))
@@ -88,66 +87,96 @@ uploaded = st.sidebar.file_uploader("Upload CSV", type=["csv"])
 if uploaded is not None:
     try:
         uploaded_df = pd.read_csv(uploaded)
-        # Basic validation: must have at least Asset Class and Allocation (%) and Returns (%) columns
         required = {"Asset Class", "Allocation (%)", "Returns (%)"}
         if not required.issubset(set(uploaded_df.columns)):
             st.sidebar.error(f"CSV must contain columns: {', '.join(required)}")
             uploaded_df = None
         else:
-            # Use uploaded as profile data
             df_profiles[selected_profile] = uploaded_df.copy()
             st.sidebar.success("CSV loaded for the selected profile.")
     except Exception as e:
         st.sidebar.error(f"Failed to read CSV: {e}")
         uploaded_df = None
 
-# Persist currently selected profile's dataframe in session state
-if "current_df" not in st.session_state:
+# Initialize session state
+if "profile_name" not in st.session_state or st.session_state.get("profile_name") != selected_profile:
+    st.session_state.profile_name = selected_profile
     st.session_state.current_df = df_profiles[selected_profile].copy()
-else:
-    # when profile changes, update
-    if st.session_state.get("profile_name", None) != selected_profile:
-        st.session_state.current_df = df_profiles[selected_profile].copy()
-
-st.session_state.profile_name = selected_profile
 
 st.sidebar.markdown("---")
-st.sidebar.subheader("Edit / Manage")
 if st.sidebar.button("Reset to default for profile"):
     st.session_state.current_df = df_profiles[selected_profile].copy()
     st.sidebar.success("Reset to default data for selected profile.")
 
 normalize_mode = st.sidebar.checkbox("Auto-normalize allocations to 100% on request", value=True)
-
-st.sidebar.markdown("---")
-st.sidebar.info("Tip: Edit values inline in the table below. Use 'Normalize allocations' to scale allocations to 100%.")
+st.sidebar.info("Edit values using the editor below (method depends on Streamlit version).")
 
 # ---------------------------
-# Main - show and edit table
+# Editor: try modern APIs then fallback
 # ---------------------------
 st.header(f"Selected Profile: {selected_profile}")
-st.markdown("Edit the fields directly in the table (double-click a cell). When you're done, press **Apply changes**.")
+st.markdown("Edit the table using the editor below, then press **Apply changes**. If inline editor isn't available, use the manual edit form.")
 
-# Use experimental_data_editor for inline editing (will work on Streamlit)
-edited_df = st.experimental_data_editor(st.session_state.current_df, num_rows="dynamic")
+editor_used = None
+edited_df = None
 
-# Apply changes to session_state
-if st.button("Apply changes"):
-    # Basic cleaning: ensure Allocation (%) numeric
-    if "Allocation (%)" in edited_df.columns:
-        edited_df["Allocation (%)"] = pd.to_numeric(edited_df["Allocation (%)"], errors="coerce").fillna(0.0)
-    if "Returns (%)" in edited_df.columns:
-        # Keep returns as strings typically (range like '4–7'), but try to parse average if in numeric form
-        # For later numeric calculation we will attempt to compute avg numeric return if possible
-        pass
-    st.session_state.current_df = edited_df.copy()
-    st.success("Changes applied to the profile data.")
+# Attempt modern data editor first, with fallbacks
+try:
+    # try new st.data_editor (Streamlit >=1.23)
+    if hasattr(st, "data_editor"):
+        edited_df = st.data_editor(st.session_state.current_df, num_rows="dynamic")
+        editor_used = "data_editor"
+    elif hasattr(st, "experimental_data_editor"):
+        # older experimental API
+        edited_df = st.experimental_data_editor(st.session_state.current_df, num_rows="dynamic")
+        editor_used = "experimental_data_editor"
+    else:
+        raise AttributeError("No data editor available")
+except Exception:
+    # Fallback manual editor: render a form with fields per row
+    editor_used = "manual_form"
+    st.warning("Inline editor not available in this Streamlit version. Using manual edit form below.")
+    manual_df = st.session_state.current_df.copy()
+    with st.form("manual_edit_form"):
+        rows = []
+        for i, row in manual_df.iterrows():
+            st.markdown(f"**Row {i+1}: {row.get('Asset Class', '')}**")
+            ac = st.text_input(f"Asset Class [{i}]", value=str(row.get("Asset Class", "")))
+            risk = st.text_input(f"Risk [{i}]", value=str(row.get("Risk", "")))
+            returns = st.text_input(f"Returns (%) [{i}]", value=str(row.get("Returns (%)", "")))
+            horizon = st.text_input(f"Horizon [{i}]", value=str(row.get("Horizon", "")))
+            purpose = st.text_input(f"Purpose [{i}]", value=str(row.get("Purpose", "")))
+            alloc = st.number_input(f"Allocation (%) [{i}]", value=float(row.get("Allocation (%)", 0.0)), step=0.1, key=f"alloc_{i}")
+            rows.append({
+                "Asset Class": ac,
+                "Risk": risk,
+                "Returns (%)": returns,
+                "Horizon": horizon,
+                "Purpose": purpose,
+                "Allocation (%)": alloc
+            })
+            st.markdown("---")
+        submitted_manual = st.form_submit_button("Submit manual edits")
+    if submitted_manual:
+        edited_df = pd.DataFrame(rows)
 
-# Offer Normalize allocations button
+# If an editor was used and returned a DataFrame, show Apply button
+if edited_df is not None:
+    if st.button("Apply changes"):
+        # Basic cleaning
+        if "Allocation (%)" in edited_df.columns:
+            edited_df["Allocation (%)"] = pd.to_numeric(edited_df["Allocation (%)"], errors="coerce").fillna(0.0)
+        st.session_state.current_df = edited_df.copy()
+        st.success("Changes applied to the profile data.")
+    else:
+        st.info(f"Editor in use: {editor_used}. Make edits then click 'Apply changes' to save.")
+else:
+    st.error("No editor available and no manual edits submitted. Data is read-only until you edit.")
+
+# Normalize allocations button
 st.write("")  # spacing
-col_norm, col_download = st.columns([1, 1])
-
-with col_norm:
+col1, col2 = st.columns([1, 1])
+with col1:
     if st.button("Normalize allocations to 100%"):
         total = st.session_state.current_df.get("Allocation (%)", pd.Series(dtype=float)).sum()
         if total == 0:
@@ -157,34 +186,28 @@ with col_norm:
             st.session_state.current_df["Allocation (%)"] = (st.session_state.current_df["Allocation (%)"] * factor).round(2)
             st.success("Allocations normalized to sum to 100%.")
 
-with col_download:
+# Download current table
+with col2:
     csv_buf = st.session_state.current_df.to_csv(index=False)
     st.download_button("Download current table as CSV", data=csv_buf, file_name=f"{selected_profile.replace(' ','_')}.csv", mime="text/csv")
 
-# Show table (read-only copy)
+# ---------------------------
+# Show current table
+# ---------------------------
 st.subheader("Portfolio Table (current)")
 st.dataframe(st.session_state.current_df.reset_index(drop=True), use_container_width=True)
 
 # ---------------------------
-# Helper: compute numeric weighted average return
-# We'll try to interpret `Returns (%)` column if numeric or ranges.
+# Helper: parse returns to numeric average when possible
 # ---------------------------
 def parse_return_value(val):
-    """
-    Accepts strings like '4–7' or '4-7' or '6.5' or '20+' or 'Varies'
-    Returns numeric average if parseable, else None.
-    """
     if pd.isna(val):
         return None
     if isinstance(val, (int, float)):
         return float(val)
     s = str(val).strip()
-    # remove percent sign if present
-    s = s.replace("%", "")
-    # replace unicode dash with hyphen
-    s = s.replace("–", "-").replace("—", "-")
+    s = s.replace("%", "").replace("–", "-").replace("—", "-")
     if "+" in s:
-        # e.g., "20+"
         s = s.replace("+", "")
         try:
             return float(s)
@@ -195,7 +218,7 @@ def parse_return_value(val):
         try:
             nums = [float(p) for p in parts if p != ""]
             if len(nums) >= 2:
-                return sum(nums[:2]) / 2.0
+                return (nums[0] + nums[1]) / 2.0
         except:
             return None
     try:
@@ -203,41 +226,43 @@ def parse_return_value(val):
     except:
         return None
 
-# Compute weighted average return
+# Compute parsed returns and weighted avg
 df_calc = st.session_state.current_df.copy()
-df_calc["_ParsedReturn"] = df_calc["Returns (%)"].apply(parse_return_value)
-total_alloc = df_calc["Allocation (%)"].sum()
+if "Returns (%)" in df_calc.columns:
+    df_calc["_ParsedReturn"] = df_calc["Returns (%)"].apply(parse_return_value)
+else:
+    df_calc["_ParsedReturn"] = None
+
+total_alloc = df_calc["Allocation (%)"].sum() if "Allocation (%)" in df_calc.columns else 0.0
 if total_alloc > 0:
-    # Only include rows that parsed to numeric return, others omitted from weighted calc
     mask = df_calc["_ParsedReturn"].notna()
     if mask.any():
         weighted_sum = (df_calc.loc[mask, "_ParsedReturn"] * df_calc.loc[mask, "Allocation (%)"]).sum()
-        weighted_avg_return = weighted_sum / df_calc["Allocation (%)"].sum()
+        weighted_avg_return = weighted_sum / total_alloc
     else:
         weighted_avg_return = None
 else:
     weighted_avg_return = None
 
-# ---------------------------
 # Filters (Horizon / Purpose)
-# ---------------------------
 st.sidebar.markdown("---")
-st.sidebar.subheader("Filters (view only)")
-horizons = sorted(st.session_state.current_df["Horizon"].dropna().unique().tolist())
-selected_horizons = st.sidebar.multiselect("Horizon", options=horizons, default=horizons)
-purposes = sorted(st.session_state.current_df["Purpose"].dropna().unique().tolist())
-selected_purposes = st.sidebar.multiselect("Purpose", options=purposes, default=purposes)
+st.sidebar.subheader("View Filters")
+horizons = sorted(st.session_state.current_df.get("Horizon", pd.Series()).dropna().unique().tolist())
+selected_horizons = st.sidebar.multiselect("Horizon", options=horizons, default=horizons if horizons else [])
+purposes = sorted(st.session_state.current_df.get("Purpose", pd.Series()).dropna().unique().tolist())
+selected_purposes = st.sidebar.multiselect("Purpose", options=purposes, default=purposes if purposes else [])
 
-view_df = st.session_state.current_df[
-    st.session_state.current_df["Horizon"].isin(selected_horizons) &
-    st.session_state.current_df["Purpose"].isin(selected_purposes)
-].reset_index(drop=True)
+view_df = st.session_state.current_df.copy()
+if selected_horizons:
+    view_df = view_df[view_df["Horizon"].isin(selected_horizons)]
+if selected_purposes:
+    view_df = view_df[view_df["Purpose"].isin(selected_purposes)]
 
 st.subheader("Filtered View")
-st.dataframe(view_df, use_container_width=True)
+st.dataframe(view_df.reset_index(drop=True), use_container_width=True)
 
 # ---------------------------
-# Summaries and charts
+# Summaries and visuals (built-in)
 # ---------------------------
 st.subheader("Portfolio Summary & Metrics")
 col_a, col_b, col_c = st.columns([1, 1, 1])
@@ -246,41 +271,30 @@ with col_a:
     st.metric("Total Allocation (%)", f"{total_alloc:.2f}")
 
 with col_b:
-    if weighted_avg_return is not None:
-        st.metric("Weighted Avg Return (%)", f"{weighted_avg_return:.2f}")
-    else:
-        st.metric("Weighted Avg Return (%)", "N/A")
+    st.metric("Weighted Avg Return (%)", f"{weighted_avg_return:.2f}" if weighted_avg_return is not None else "N/A")
 
 with col_c:
-    # Risk breakdown
-    risk_counts = st.session_state.current_df["Risk"].value_counts().to_dict()
-    top_risk = max(risk_counts, key=risk_counts.get) if len(risk_counts) > 0 else "N/A"
+    risk_counts = st.session_state.current_df.get("Risk", pd.Series()).value_counts().to_dict()
+    top_risk = max(risk_counts, key=risk_counts.get) if risk_counts else "N/A"
     st.metric("Dominant Risk Type", str(top_risk))
 
-# Simple charts using streamlit built-ins
 st.subheader("Visuals")
 col1, col2 = st.columns(2)
-
 with col1:
     st.markdown("**Allocation (%) by Asset Class**")
-    chart_alloc = st.session_state.current_df.set_index("Asset Class")["Allocation (%)"]
-    # Make a DataFrame for bar_chart
-    if chart_alloc.sum() == 0:
+    if st.session_state.current_df.get("Allocation (%)", pd.Series()).sum() == 0:
         st.info("No allocation data to chart.")
     else:
-        st.bar_chart(chart_alloc)
+        st.bar_chart(st.session_state.current_df.set_index("Asset Class")["Allocation (%)"])
 
 with col2:
     st.markdown("**Parsed Returns (%) by Asset Class (numeric only)**")
-    chart_ret = st.session_state.current_df.set_index("Asset Class")["_ParsedReturn"]
-    if chart_ret.dropna().empty:
-        st.info("No numeric returns parsed to show chart (some returns are ranges or 'Varies').")
+    if df_calc["_ParsedReturn"].dropna().empty:
+        st.info("No numeric returns parsed to show chart.")
     else:
-        st.bar_chart(chart_ret.fillna(0))
+        st.bar_chart(df_calc.set_index("Asset Class")["_ParsedReturn"].fillna(0))
 
-# ---------------------------
 # Automatic insights
-# ---------------------------
 st.subheader("Automatic Insights")
 insights = []
 if total_alloc < 90:
@@ -295,7 +309,6 @@ if weighted_avg_return is not None:
     else:
         insights.append("Portfolio expected return is comparatively high (>10%).")
 
-# Risk concentration
 if not st.session_state.current_df.empty:
     top_alloc_row = st.session_state.current_df.loc[st.session_state.current_df["Allocation (%)"].idxmax()]
     top_asset = top_alloc_row["Asset Class"]
@@ -310,5 +323,4 @@ else:
     st.write("No immediate insights. Data looks balanced.")
 
 st.markdown("---")
-st.caption("Created with ❤️ — edit allocations, normalize, and export. Save this file as app.py and deploy on Streamlit Cloud.")
-
+st.caption("Created with ❤️ — save as app.py and deploy on Streamlit Cloud. This version includes fallbacks if your Streamlit runtime lacks the inline data editor.")
