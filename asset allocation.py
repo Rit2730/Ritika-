@@ -12,7 +12,7 @@ try:
 except Exception:
     PLOTLY_OK = False
 
-st.set_page_config(page_title="Premium Asset Allocation — Classic Blue", layout="wide", page_icon="📊")
+st.set_page_config(page_title="Asset Allocation", layout="wide", page_icon="📊")
 
 # -------------------------
 # THEME: Premium Classic Blue (matte)
