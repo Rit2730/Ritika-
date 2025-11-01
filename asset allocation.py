@@ -1,19 +1,68 @@
 # app.py
 import streamlit as st
 import pandas as pd
+import numpy as np
 from io import StringIO
 
-st.set_page_config(page_title="Multi-Profile Investment Dashboard", layout="wide", page_icon="💼")
+# try plotly, fall back gracefully if missing
+try:
+    import plotly.express as px
+    import plotly.graph_objects as go
+    PLOTLY_OK = True
+except Exception:
+    PLOTLY_OK = False
 
-st.title("💼 Multi-Profile Investment Dashboard")
-st.markdown(
-    "This app contains three sample portfolios (Low, Moderate, High risk). "
-    "Choose a profile, upload CSV to replace it, edit values, normalize allocations, and export as CSV."
-)
+st.set_page_config(page_title="Premium Investment Dashboard", page_icon="💠", layout="wide")
 
-# ---------------------------
-# Predefined portfolio data
-# ---------------------------
+# -------------------------
+# DARK THEME (Theme A)
+# -------------------------
+dark_css = """
+<style>
+/* background gradient and base colors */
+html, body, .stApp { background: linear-gradient(180deg,#061026 0%, #031226 100%); color: #e6f7ff; }
+h1, h2, h3 { color: #e6f7ff; font-family: Inter, Roboto, Arial; }
+.stButton>button { background-color:#06b6b4; color:#021226; border-radius:8px; padding:6px 10px; }
+.stSidebar .sidebar-content { background:#021226; color:#cdeef0; padding:12px; border-radius:8px; }
+.stDataFrame table { color: #dff6ff; }
+.metric-value { color: #bfefff; }
+hr { border: none; border-top: 1px solid rgba(191,239,255,0.06); }
+</style>
+"""
+st.markdown(dark_css, unsafe_allow_html=True)
+
+# -------------------------
+# Typing animation (titles & insights only), no sound
+# -------------------------
+typing_html = """
+<div id="typed_title" style="font-family:Inter, Roboto, Arial; font-size:32px; color:#bfefff; font-weight:700;"></div>
+<script>
+const textTitle = "💠 Premium Investment Dashboard";
+const speed = 30; // fast typing
+let idx = 0;
+function typeTitle() {
+  if (idx < textTitle.length) {
+    document.getElementById('typed_title').innerHTML += textTitle.charAt(idx);
+    idx++;
+    setTimeout(typeTitle, speed);
+  } else {
+    // add subtle cursor blink
+    const el = document.getElementById('typed_title');
+    let vis = true;
+    setInterval(() => { el.style.borderRight = vis ? '2px solid rgba(191,239,255,0.7)' : 'none'; vis = !vis; }, 700);
+  }
+}
+typeTitle();
+</script>
+"""
+st.components.v1.html(typing_html, height=70)
+
+st.markdown(" ")
+st.markdown("<hr/>", unsafe_allow_html=True)
+
+# -------------------------
+# Predefined portfolios (data from you)
+# -------------------------
 LOW_DATA = {
     "Asset Class": [
         "Government Bonds (G-sec)", "AAA Corporate Bonds", "PPF / NSC / Small Savings",
@@ -76,143 +125,140 @@ df_profiles = {
     "High Risk Profile": pd.DataFrame(HIGH_DATA),
 }
 
-# ---------------------------
-# Sidebar - profile selection + upload
-# ---------------------------
-st.sidebar.header("Profile & Data")
+# -------------------------
+# Sidebar controls & upload
+# -------------------------
+st.sidebar.header("Profile & Controls")
 selected_profile = st.sidebar.selectbox("Choose portfolio profile", list(df_profiles.keys()))
 
-st.sidebar.markdown("**Upload CSV** (optional) to replace this profile")
-uploaded = st.sidebar.file_uploader("Upload CSV", type=["csv"])
+uploaded = st.sidebar.file_uploader("Upload CSV (optional) to replace profile", type=["csv"])
 if uploaded is not None:
     try:
         uploaded_df = pd.read_csv(uploaded)
-        required = {"Asset Class", "Allocation (%)", "Returns (%)"}
-        if not required.issubset(set(uploaded_df.columns)):
-            st.sidebar.error(f"CSV must contain columns: {', '.join(required)}")
-            uploaded_df = None
+        required_cols = {"Asset Class", "Allocation (%)", "Returns (%)"}
+        if not required_cols.issubset(set(uploaded_df.columns)):
+            st.sidebar.error(f"CSV must include: {', '.join(required_cols)}")
         else:
             df_profiles[selected_profile] = uploaded_df.copy()
-            st.sidebar.success("CSV loaded for the selected profile.")
+            st.sidebar.success("CSV loaded for selected profile.")
     except Exception as e:
-        st.sidebar.error(f"Failed to read CSV: {e}")
-        uploaded_df = None
+        st.sidebar.error(f"CSV read error: {e}")
 
-# Initialize session state
-if "profile_name" not in st.session_state or st.session_state.get("profile_name") != selected_profile:
+# keep dataframe in session state per profile
+if "profile_name" not in st.session_state or st.session_state.profile_name != selected_profile:
     st.session_state.profile_name = selected_profile
     st.session_state.current_df = df_profiles[selected_profile].copy()
 
 st.sidebar.markdown("---")
 if st.sidebar.button("Reset to default for profile"):
     st.session_state.current_df = df_profiles[selected_profile].copy()
-    st.sidebar.success("Reset to default data for selected profile.")
+    st.sidebar.success("Reset done.")
 
-normalize_mode = st.sidebar.checkbox("Auto-normalize allocations to 100% on request", value=True)
-st.sidebar.info("Edit values using the editor below (method depends on Streamlit version).")
+st.sidebar.markdown("---")
+st.sidebar.subheader("Presentation")
+show_icons = st.sidebar.checkbox("Show icons for asset categories", value=True)
+st.sidebar.caption("Icons are small inline SVGs/emoji for visual cue.")
 
-# ---------------------------
-# Editor: try modern APIs then fallback
-# ---------------------------
-st.header(f"Selected Profile: {selected_profile}")
-st.markdown("Edit the table using the editor below, then press **Apply changes**. If inline editor isn't available, use the manual edit form.")
+# -------------------------
+# Inline editor with fallback
+# -------------------------
+st.header(f"Selected Profile — {selected_profile}")
+st.markdown("Edit inline (if supported) or use the manual fallback form. Click **Apply changes** to save edits.")
 
-editor_used = None
 edited_df = None
+editor_mode = None
 
-# Attempt modern data editor first, with fallbacks
 try:
-    # try new st.data_editor (Streamlit >=1.23)
     if hasattr(st, "data_editor"):
         edited_df = st.data_editor(st.session_state.current_df, num_rows="dynamic")
-        editor_used = "data_editor"
+        editor_mode = "data_editor"
     elif hasattr(st, "experimental_data_editor"):
-        # older experimental API
         edited_df = st.experimental_data_editor(st.session_state.current_df, num_rows="dynamic")
-        editor_used = "experimental_data_editor"
+        editor_mode = "experimental_data_editor"
     else:
-        raise AttributeError("No data editor available")
+        raise AttributeError
 except Exception:
-    # Fallback manual editor: render a form with fields per row
-    editor_used = "manual_form"
-    st.warning("Inline editor not available in this Streamlit version. Using manual edit form below.")
+    editor_mode = "manual"
+    st.warning("Inline editor unavailable — using manual edit form.")
     manual_df = st.session_state.current_df.copy()
-    with st.form("manual_edit_form"):
+    with st.form("manual_edit"):
         rows = []
-        for i, row in manual_df.iterrows():
-            st.markdown(f"**Row {i+1}: {row.get('Asset Class', '')}**")
-            ac = st.text_input(f"Asset Class [{i}]", value=str(row.get("Asset Class", "")))
-            risk = st.text_input(f"Risk [{i}]", value=str(row.get("Risk", "")))
-            returns = st.text_input(f"Returns (%) [{i}]", value=str(row.get("Returns (%)", "")))
-            horizon = st.text_input(f"Horizon [{i}]", value=str(row.get("Horizon", "")))
-            purpose = st.text_input(f"Purpose [{i}]", value=str(row.get("Purpose", "")))
-            alloc = st.number_input(f"Allocation (%) [{i}]", value=float(row.get("Allocation (%)", 0.0)), step=0.1, key=f"alloc_{i}")
+        for i, r in manual_df.iterrows():
+            st.markdown(f"**Row {i+1}: {r.get('Asset Class','')}**")
+            ac = st.text_input(f"Asset Class [{i}]", value=str(r.get("Asset Class", "")))
+            risk = st.text_input(f"Risk [{i}]", value=str(r.get("Risk", "")))
+            ret = st.text_input(f"Returns (%) [{i}]", value=str(r.get("Returns (%)", "")))
+            hor = st.text_input(f"Horizon [{i}]", value=str(r.get("Horizon", "")))
+            purp = st.text_input(f"Purpose [{i}]", value=str(r.get("Purpose", "")))
+            alloc = st.number_input(f"Allocation (%) [{i}]", value=float(r.get("Allocation (%)", 0.0)), step=0.1, key=f"alloc_{i}")
             rows.append({
                 "Asset Class": ac,
                 "Risk": risk,
-                "Returns (%)": returns,
-                "Horizon": horizon,
-                "Purpose": purpose,
+                "Returns (%)": ret,
+                "Horizon": hor,
+                "Purpose": purp,
                 "Allocation (%)": alloc
             })
             st.markdown("---")
-        submitted_manual = st.form_submit_button("Submit manual edits")
-    if submitted_manual:
+        manual_submit = st.form_submit_button("Submit manual edits")
+    if manual_submit:
         edited_df = pd.DataFrame(rows)
 
-# If an editor was used and returned a DataFrame, show Apply button
 if edited_df is not None:
     if st.button("Apply changes"):
-        # Basic cleaning
         if "Allocation (%)" in edited_df.columns:
             edited_df["Allocation (%)"] = pd.to_numeric(edited_df["Allocation (%)"], errors="coerce").fillna(0.0)
         st.session_state.current_df = edited_df.copy()
-        st.success("Changes applied to the profile data.")
+        st.success("Changes applied.")
     else:
-        st.info(f"Editor in use: {editor_used}. Make edits then click 'Apply changes' to save.")
-else:
-    st.error("No editor available and no manual edits submitted. Data is read-only until you edit.")
+        st.info(f"Editor active: {editor_mode}. Make edits then press 'Apply changes'.")
 
-# Normalize allocations button
-st.write("")  # spacing
-col1, col2 = st.columns([1, 1])
-with col1:
+# Normalize & download
+col_norm, col_dl = st.columns([1,1])
+with col_norm:
     if st.button("Normalize allocations to 100%"):
         total = st.session_state.current_df.get("Allocation (%)", pd.Series(dtype=float)).sum()
         if total == 0:
-            st.error("Total allocation is 0; can't normalize.")
+            st.error("Total allocation is 0 — cannot normalize.")
         else:
-            factor = 100.0 / total
-            st.session_state.current_df["Allocation (%)"] = (st.session_state.current_df["Allocation (%)"] * factor).round(2)
-            st.success("Allocations normalized to sum to 100%.")
-
-# Download current table
-with col2:
+            st.session_state.current_df["Allocation (%)"] = (st.session_state.current_df["Allocation (%)"] / total * 100).round(2)
+            st.success("Allocations normalized.")
+with col_dl:
     csv_buf = st.session_state.current_df.to_csv(index=False)
-    st.download_button("Download current table as CSV", data=csv_buf, file_name=f"{selected_profile.replace(' ','_')}.csv", mime="text/csv")
+    st.download_button("Download current table (CSV)", data=csv_buf, file_name=f"{selected_profile.replace(' ','_')}.csv", mime="text/csv")
 
-# ---------------------------
-# Show current table
-# ---------------------------
-st.subheader("Portfolio Table (current)")
+st.subheader("Current Portfolio Table")
+if show_icons:
+    # small legend with emojis / simple SVG icons for categories
+    legend_html = """
+    <div style="display:flex;gap:12px;align-items:center;margin-bottom:8px;">
+      <div style="display:flex;flex-direction:column;align-items:center;">
+        <div style="font-size:18px">💵</div><small>Debt</small></div>
+      <div style="display:flex;flex-direction:column;align-items:center;">
+        <div style="font-size:18px">📈</div><small>Equity</small></div>
+      <div style="display:flex;flex-direction:column;align-items:center;">
+        <div style="font-size:18px">🏠</div><small>Real Assets</small></div>
+      <div style="display:flex;flex-direction:column;align-items:center;">
+        <div style="font-size:18px">🟨</div><small>Alternatives</small></div>
+    </div>
+    """
+    st.markdown(legend_html, unsafe_allow_html=True)
+
 st.dataframe(st.session_state.current_df.reset_index(drop=True), use_container_width=True)
 
-# ---------------------------
-# Helper: parse returns to numeric average when possible
-# ---------------------------
+# -------------------------
+# Helper: parse return strings to numeric average
+# -------------------------
 def parse_return_value(val):
     if pd.isna(val):
         return None
     if isinstance(val, (int, float)):
         return float(val)
-    s = str(val).strip()
-    s = s.replace("%", "").replace("–", "-").replace("—", "-")
+    s = str(val).strip().replace("%","").replace("–","-").replace("—","-")
     if "+" in s:
-        s = s.replace("+", "")
-        try:
-            return float(s)
-        except:
-            return None
+        s = s.replace("+","")
+        try: return float(s)
+        except: return None
     if "-" in s:
         parts = s.split("-")
         try:
@@ -226,27 +272,20 @@ def parse_return_value(val):
     except:
         return None
 
-# Compute parsed returns and weighted avg
 df_calc = st.session_state.current_df.copy()
-if "Returns (%)" in df_calc.columns:
-    df_calc["_ParsedReturn"] = df_calc["Returns (%)"].apply(parse_return_value)
-else:
-    df_calc["_ParsedReturn"] = None
-
-total_alloc = df_calc["Allocation (%)"].sum() if "Allocation (%)" in df_calc.columns else 0.0
-if total_alloc > 0:
-    mask = df_calc["_ParsedReturn"].notna()
-    if mask.any():
-        weighted_sum = (df_calc.loc[mask, "_ParsedReturn"] * df_calc.loc[mask, "Allocation (%)"]).sum()
-        weighted_avg_return = weighted_sum / total_alloc
-    else:
-        weighted_avg_return = None
+df_calc["_ParsedReturn"] = df_calc.get("Returns (%)", pd.Series()).apply(parse_return_value)
+total_alloc = df_calc.get("Allocation (%)", pd.Series(dtype=float)).sum()
+if total_alloc > 0 and df_calc["_ParsedReturn"].notna().any():
+    weighted_sum = (df_calc.loc[df_calc["_ParsedReturn"].notna(), "_ParsedReturn"] * df_calc.loc[df_calc["_ParsedReturn"].notna(), "Allocation (%)"]).sum()
+    weighted_avg_return = weighted_sum / total_alloc
 else:
     weighted_avg_return = None
 
-# Filters (Horizon / Purpose)
+# -------------------------
+# Filters for view
+# -------------------------
 st.sidebar.markdown("---")
-st.sidebar.subheader("View Filters")
+st.sidebar.subheader("Filters (view only)")
 horizons = sorted(st.session_state.current_df.get("Horizon", pd.Series()).dropna().unique().tolist())
 selected_horizons = st.sidebar.multiselect("Horizon", options=horizons, default=horizons if horizons else [])
 purposes = sorted(st.session_state.current_df.get("Purpose", pd.Series()).dropna().unique().tolist())
@@ -261,66 +300,191 @@ if selected_purposes:
 st.subheader("Filtered View")
 st.dataframe(view_df.reset_index(drop=True), use_container_width=True)
 
-# ---------------------------
-# Summaries and visuals (built-in)
-# ---------------------------
+# -------------------------
+# Summary metrics + typing-insight animation (typing for insights only)
+# -------------------------
 st.subheader("Portfolio Summary & Metrics")
-col_a, col_b, col_c = st.columns([1, 1, 1])
-
-with col_a:
+c1, c2, c3 = st.columns(3)
+with c1:
     st.metric("Total Allocation (%)", f"{total_alloc:.2f}")
-
-with col_b:
+with c2:
     st.metric("Weighted Avg Return (%)", f"{weighted_avg_return:.2f}" if weighted_avg_return is not None else "N/A")
-
-with col_c:
-    risk_counts = st.session_state.current_df.get("Risk", pd.Series()).value_counts().to_dict()
-    top_risk = max(risk_counts, key=risk_counts.get) if risk_counts else "N/A"
+with c3:
+    rc = st.session_state.current_df.get("Risk", pd.Series()).value_counts().to_dict()
+    top_risk = max(rc, key=rc.get) if rc else "N/A"
     st.metric("Dominant Risk Type", str(top_risk))
 
-st.subheader("Visuals")
-col1, col2 = st.columns(2)
-with col1:
-    st.markdown("**Allocation (%) by Asset Class**")
-    if st.session_state.current_df.get("Allocation (%)", pd.Series()).sum() == 0:
-        st.info("No allocation data to chart.")
+# typing animation for insights (no sound)
+insight_text = ""
+if weighted_avg_return is not None:
+    if weighted_avg_return < 6:
+        insight_text = "The portfolio is conservative — expected returns are low."
+    elif weighted_avg_return < 10:
+        insight_text = "Balanced profile — good mix of safety and growth."
     else:
-        st.bar_chart(st.session_state.current_df.set_index("Asset Class")["Allocation (%)"])
+        insight_text = "Aggressive profile — higher expected returns with higher volatility."
 
-with col2:
-    st.markdown("**Parsed Returns (%) by Asset Class (numeric only)**")
-    if df_calc["_ParsedReturn"].dropna().empty:
-        st.info("No numeric returns parsed to show chart.")
+insight_html = f"""
+<div id="typed_ins" style="font-family:Inter, Roboto, Arial; font-size:18px; color:#dffaff; font-weight:600;"></div>
+<script>
+const txt = {insight_text!r};
+const speed = 28;
+let j = 0;
+function typeInsight() {{
+  if (j < txt.length) {{
+    document.getElementById('typed_ins').innerHTML += txt.charAt(j);
+    j++;
+    setTimeout(typeInsight, speed);
+  }}
+}}
+typeInsight();
+</script>
+"""
+st.components.v1.html(insight_html, height=50)
+
+# -------------------------
+# Visuals: Donut pie, 3D scatter & 3D bar, heatmap (Plotly)
+# -------------------------
+st.markdown("---")
+st.subheader("Visual Insights")
+
+if not PLOTLY_OK:
+    st.warning("Plotly is not installed. Add 'plotly' to requirements.txt and redeploy to see interactive charts.")
+    st.markdown("Fallback: Allocation bar chart")
+    st.bar_chart(st.session_state.current_df.set_index("Asset Class")["Allocation (%)"])
+else:
+    # Donut
+    st.markdown("**Donut: Allocation (%)**")
+    fig_donut = px.pie(
+        st.session_state.current_df,
+        names="Asset Class",
+        values="Allocation (%)",
+        hole=0.45,
+        title="Portfolio Allocation (Donut)",
+        color_discrete_sequence=px.colors.sequential.Tealgrn
+    )
+    fig_donut.update_traces(textposition="inside", textinfo="percent+label", insidetextorientation='radial')
+    st.plotly_chart(fig_donut, use_container_width=True)
+
+    # 3D scatter (Risk category numeric vs Return vs Allocation)
+    st.markdown("**3D Scatter: Risk vs Return vs Allocation** (interactive)")
+    unique_risks = list(st.session_state.current_df["Risk"].unique())
+    risk_map = {r: i+1 for i, r in enumerate(unique_risks)}
+    plot_df = df_calc.copy()
+    plot_df["RiskNum"] = plot_df["Risk"].map(risk_map).fillna(0)
+    scatter = go.Figure(data=[go.Scatter3d(
+        x=plot_df["RiskNum"],
+        y=plot_df["_ParsedReturn"],
+        z=plot_df["Allocation (%)"],
+        mode='markers',
+        text=plot_df["Asset Class"],
+        marker=dict(size=np.clip(plot_df["Allocation (%)"]*0.6, 6, 45), color=plot_df["_ParsedReturn"], colorscale='Viridis', showscale=True),
+    )])
+    scatter.update_layout(scene=dict(
+        xaxis=dict(title="Risk (categorical)"),
+        yaxis=dict(title="Parsed Return (%)"),
+        zaxis=dict(title="Allocation (%)")
+    ), margin=dict(l=0,r=0,b=0,t=30))
+    st.plotly_chart(scatter, use_container_width=True)
+
+    # 3D bar (both)
+    st.markdown("**3D Bar: Allocation by Asset (interactive)**")
+    # create simple 3D bar by stacking bars along an index (converted to numeric)
+    idx = np.arange(len(plot_df))
+    bar3d = go.Figure()
+    bar3d.add_trace(go.Bar3d(
+        x=idx, y=[0]*len(idx), z=[0]*len(idx),
+        dx=0.6, dy=0.6, dz=plot_df["Allocation (%)"].fillna(0),
+        text=plot_df["Asset Class"],
+        hovertemplate="Asset: %{text}<br>Allocation: %{dz}%<extra></extra>"
+    ))
+    bar3d.update_layout(scene=dict(
+        xaxis=dict(title="Asset Index", tickmode='array', tickvals=idx, ticktext=plot_df["Asset Class"]),
+        yaxis=dict(title=""),
+        zaxis=dict(title="Allocation (%)")
+    ), margin=dict(l=0,r=0,b=0,t=30), height=500)
+    st.plotly_chart(bar3d, use_container_width=True)
+
+    # Heatmap: Risk vs Avg Parsed Return
+    st.markdown("**Risk–Return Heatmap (Avg Return by Risk Category)**")
+    heat_df = st.session_state.current_df.copy()
+    heat_df["_ParsedReturn"] = heat_df["Returns (%)"].apply(parse_return_value)
+    heat_group = heat_df.groupby("Risk")["_ParsedReturn"].mean().reset_index().dropna()
+    if heat_group.empty:
+        st.info("Not enough numeric return data to build heatmap.")
     else:
-        st.bar_chart(df_calc.set_index("Asset Class")["_ParsedReturn"].fillna(0))
+        fig_heat = go.Figure(data=go.Heatmap(
+            z=[heat_group["_ParsedReturn"].values],
+            x=heat_group["Risk"],
+            y=["Avg Return"],
+            colorscale='RdYlGn'
+        ))
+        fig_heat.update_layout(height=200, margin=dict(l=20,r=20,t=30,b=20))
+        st.plotly_chart(fig_heat, use_container_width=True)
 
-# Automatic insights
+# -------------------------
+# Projection calculator (1/3/5/10 yrs), uses parsed returns
+# -------------------------
+st.markdown("---")
+st.subheader("Projection Calculator")
+initial = st.number_input("Initial investment (₹)", min_value=1000.0, value=100000.0, step=1000.0)
+yrs = st.selectbox("Projection horizon (years)", options=[1,3,5,10], index=1)
+
+proj_df = df_calc.copy()
+total_alloc_now = proj_df["Allocation (%)"].sum()
+if total_alloc_now <= 0:
+    st.warning("Allocations sum to 0 — set allocations to compute projections.")
+else:
+    proj_df["Weight"] = proj_df["Allocation (%)"] / total_alloc_now
+    fallback = proj_df["_ParsedReturn"].median() if proj_df["_ParsedReturn"].notna().any() else 6.0
+    proj_df["_UseReturn"] = proj_df["_ParsedReturn"].fillna(fallback)
+    portfolio_return_decimal = (proj_df["_UseReturn"] * proj_df["Weight"]).sum() / 100.0
+    future_val = initial * ((1 + portfolio_return_decimal) ** yrs)
+    st.metric(f"Projected value after {yrs} years", f"₹{future_val:,.0f}")
+    st.caption(f"Portfolio average annual return used: {portfolio_return_decimal*100:.2f}% (fallback {fallback:.2f}% for non-numeric assets)")
+
+# -------------------------
+# Automatic insights (typing style for short sentence)
+# -------------------------
+st.markdown("---")
 st.subheader("Automatic Insights")
 insights = []
 if total_alloc < 90:
-    insights.append("Total allocation is less than 90% — consider deploying remaining capital or check data.")
+    insights.append("Total allocation less than 90% — consider deploying idle cash or adjust allocations.")
 if total_alloc > 110:
-    insights.append("Total allocation exceeds 110% — allocations likely not normalized.")
+    insights.append("Total allocation > 110% — allocations not normalized.")
 if weighted_avg_return is not None:
     if weighted_avg_return < 6:
-        insights.append("Portfolio appears conservative with lower expected returns (< 6%).")
+        insights.append("Conservative portfolio expected (<6%).")
     elif weighted_avg_return < 10:
-        insights.append("Portfolio has a balanced expected return (6–10%).")
+        insights.append("Balanced expected return (6–10%).")
     else:
-        insights.append("Portfolio expected return is comparatively high (>10%).")
+        insights.append("Aggressive expected return (>10%).")
 
-if not st.session_state.current_df.empty:
-    top_alloc_row = st.session_state.current_df.loc[st.session_state.current_df["Allocation (%)"].idxmax()]
-    top_asset = top_alloc_row["Asset Class"]
-    top_alloc = top_alloc_row["Allocation (%)"]
-    if top_alloc >= 35:
-        insights.append(f"High concentration: {top_asset} has {top_alloc:.2f}% allocation.")
+# typing animation for the first insight only (no sound)
+first_insight = insights[0] if insights else "Portfolio looks balanced — no immediate actions required."
+insight_type_html = f"""
+<div id="typi" style="font-family:Inter, Roboto, Arial; font-size:16px; color:#dffaff; font-weight:600;"></div>
+<script>
+const ins = {first_insight!r};
+let k=0;
+const sp = 28;
+function typeIns() {{
+  if (k < ins.length) {{
+    document.getElementById('typi').innerHTML += ins.charAt(k);
+    k++;
+    setTimeout(typeIns, sp);
+  }}
+}}
+typeIns();
+</script>
+"""
+st.components.v1.html(insight_type_html, height=50)
 
-if insights:
-    for it in insights:
-        st.info(it)
-else:
-    st.write("No immediate insights. Data looks balanced.")
+# show all insights below
+for it in insights:
+    st.info(it)
 
 st.markdown("---")
-st.caption("Created with ❤️ — save as app.py and deploy on Streamlit Cloud. This version includes fallbacks if your Streamlit runtime lacks the inline data editor.")
+st.caption("Created with 💠 — Dark Mode Premium. If interactive charts are missing, ensure 'plotly' is in requirements.txt and redeploy.")
+
