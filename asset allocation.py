@@ -1,59 +1,100 @@
-# asset_allocation_svg_safe.py
+# asset_allocation_pro_final.py
 import streamlit as st
 import pandas as pd
-import math
+import numpy as np
 from io import StringIO
 
-st.set_page_config(page_title="Premium Asset Allocation (SVG-safe)", layout="wide", page_icon="💠")
+# Try plotly, set flag if available
+try:
+    import plotly.express as px
+    import plotly.graph_objects as go
+    PLOTLY_OK = True
+except Exception:
+    PLOTLY_OK = False
+
+st.set_page_config(page_title="Premium Asset Allocation — Classic Blue", layout="wide", page_icon="📊")
 
 # -------------------------
-# Minimal requirements only: streamlit + pandas (no matplotlib/plotly)
+# THEME: Premium Classic Blue (matte)
 # -------------------------
-
-# --- Styles (dark premium)
 st.markdown(
     """
     <style>
-    body { background: linear-gradient(180deg,#061026 0%, #031226 100%); color: #e6f7ff; font-family: Inter, Roboto, Arial; }
-    .stButton>button { background-color:#06b6b4; color:#021226; border-radius:8px; padding:6px 10px; }
-    .sidebar .stMarkdown { color:#cfeef0; }
-    .title-border { border-bottom: 1px solid rgba(191,239,255,0.06); padding-bottom:8px; margin-bottom:12px; }
-    .small-muted { color:#bfefff; opacity:0.8; font-size:0.9em; }
-    .svg-card { background:#071028; padding:12px; border-radius:10px; box-shadow: 0 6px 18px rgba(0,0,0,0.6); }
+    /* page background and cards */
+    .stApp {
+      background: linear-gradient(180deg, #0b1730 0%, #0f2a49 50%, #07203a 100%);
+      color: #e8f6ff;
+      font-family: Inter, Roboto, Arial, sans-serif;
+    }
+    .card {
+      background: rgba(255,255,255,0.03);
+      border-radius: 12px;
+      padding: 16px;
+      box-shadow: 0 8px 30px rgba(2,8,23,0.6);
+      border: 1px solid rgba(255,255,255,0.03);
+    }
+    .stSidebar .sidebar-content {
+      background: linear-gradient(180deg,#062033, #032637);
+      color: #cfeef0;
+      padding: 12px;
+      border-radius: 10px;
+    }
+    .muted { color: #bfefff; opacity:0.85; font-size:0.95rem; }
+    .small { font-size:0.9rem; color:#cfeef0; opacity:0.9; }
+    hr { border:none; border-top:1px solid rgba(191,239,255,0.06); margin:12px 0; }
     </style>
-    """,
-    unsafe_allow_html=True,
+    """, unsafe_allow_html=True
 )
 
 # -------------------------
-# Typing animation for title & insights (silent)
+# Typing/Fade-in Title (fade-in) + sound toggle control
+# Typing style: Fade-In chosen (we will animate opacity for title and insights).
+# Soft keyboard click sound chosen: provide toggle to enable/disable sound.
 # -------------------------
-title_html = """
-<div id="typed_title" style="font-family:Inter, Roboto, Arial; font-size:30px; color:#bfefff; font-weight:700;"></div>
+st.sidebar.header("Presentation & Controls")
+enable_sound = st.sidebar.checkbox("Enable typing click sound", value=False)
+st.sidebar.caption("Soft keyboard click sound (WebAudio). Toggle if you want the audio.")
+
+# We will inject JS+CSS for fade-in + optionally play click sound on certain UI actions (profile switch, apply changes)
+fade_js = """
+<style>
+@keyframes fadein { from { opacity: 0; transform: translateY(6px);} to { opacity: 1; transform: translateY(0);} }
+.fade-in { animation: fadein 600ms ease-out both; }
+</style>
+<div id="title-wrap" class="fade-in" style="font-size:30px;font-weight:700;color:#dffcff">💠 Premium Asset Allocation — Classic Blue</div>
+"""
+st.components.v1.html(fade_js, height=70)
+
+st.markdown("<div class='small muted'>Professional portfolio dashboards · interactive charts · rebalancer & projections</div>", unsafe_allow_html=True)
+st.markdown("<hr/>", unsafe_allow_html=True)
+
+# JavaScript for soft keyboard click sound (synthesized) and a function to call it
+sound_js = """
 <script>
-const titleText = "💠 Premium Asset Allocation Dashboard";
-let p = 0;
-function typeTitle() {
-  if (p < titleText.length) {
-    document.getElementById('typed_title').innerHTML += titleText.charAt(p);
-    p++;
-    setTimeout(typeTitle, 20);
-  } else {
-    const el = document.getElementById('typed_title');
-    el.style.borderRight = "2px solid rgba(191,239,255,0.7)";
-    setInterval(()=>{ el.style.borderRight = el.style.borderRight ? '' : '2px solid rgba(191,239,255,0.7)'; }, 700);
-  }
-}
-typeTitle();
+window.playSoftClick = (enable) => {
+  // if 'enable' is false, do nothing
+  if (!enable) return;
+  const ctx = new (window.AudioContext || window.webkitAudioContext)();
+  const o = ctx.createOscillator();
+  const g = ctx.createGain();
+  o.type = 'sine';
+  o.frequency.value = 1000; // soft click pitch
+  g.gain.value = 0.002; // low volume
+  o.connect(g);
+  g.connect(ctx.destination);
+  o.start();
+  setTimeout(()=>{ o.stop(); ctx.close(); }, 40);
+};
 </script>
 """
-st.components.v1.html(title_html, height=60)
+st.components.v1.html(sound_js, height=10)
 
-st.markdown(" ")
-st.markdown("<div class='title-border'></div>", unsafe_allow_html=True)
+# helper to call the sound from python (we pass current enable_sound flag)
+def play_click():
+    st.components.v1.html(f"<script>window.playSoftClick({str(enable_sound).lower()});</script>", height=10)
 
 # -------------------------
-# Predefined portfolio data (your data)
+# Data: three profiles (from user-provided lists)
 # -------------------------
 LOW_DATA = {
     "Asset Class": [
@@ -64,390 +105,279 @@ LOW_DATA = {
     "Risk": ["Very Low", "Low", "Very Low", "Very Low", "Low", "Low–Mod", "Moderate", "Low", "Very Low", "Low–Mod"],
     "Returns (%)": ["4–7", "5–8", "6–7", "5–7", "4–7", "6–9", "3–8", "4–7", "3–6", "6–9"],
     "Horizon": ["3–10 yrs", "2–7 yrs", "5–15 yrs", "1–5 yrs", "1–5 yrs", "5–10 yrs", "3–10 yrs", "3–10 yrs", "Lifetime", "5–10 yrs"],
-    "Purpose": ["Secure income", "Higher income low risk", "Tax-efficient retirement corpus", "Capital protection", "Stable returns", "Monthly/quarterly income", "Inflation hedge", "Predictable maturity returns", "Guaranteed income", "Stability + diversification"],
-    "Allocation (%)": [30, 20, 10, 10, 10, 7, 5, 3, 3, 2]
+    "Purpose": ["Income","Income","Retirement","Capital protection","Stable returns","Property income","Inflation hedge","Predictable returns","Guaranteed income","Stability"],
+    "Allocation (%)": [30,20,10,10,10,7,5,3,3,2]
 }
-
 MODERATE_DATA = {
-    "Asset Class": ["Large-Cap Equity Funds", "Mid/Small-Cap Funds", "Global Equity ETFs/Funds", "Hybrid/Balanced Funds",
-                    "Corporate Bond Funds", "REITs", "Gold", "Private Credit / Debt AIF", "Farmland / Agro Real Assets", "Digital Asset Basket (tiny)"],
-    "Risk": ["High", "High", "High", "Moderate", "Moderate", "Moderate", "Moderate", "Mod–High", "Moderate", "High"],
-    "Returns (%)": ["8–12", "10–15", "7–12", "7–10", "6–9", "6–10", "3–8", "8–12", "4–8", "Varies"],
-    "Horizon": ["7–10 yrs", "7–12 yrs", "7–10 yrs", "5–8 yrs", "3–7 yrs", "5–10 yrs", "3–7 yrs", "3–7 yrs", "5–15 yrs", "5–10 yrs"],
-    "Purpose": ["Core growth", "Higher alpha", "Geographic diversification", "Smoother volatility", "Income stability", "Property income", "Risk hedge", "Enhanced yield", "Real asset diversification", "Asymmetric payoff"],
-    "Allocation (%)": [25, 15, 10, 10, 10, 7, 5, 5, 5, 3]
+    "Asset Class": ["Large-Cap Equity Funds","Mid/Small-Cap Funds","Global Equity ETFs/Funds","Hybrid/Balanced Funds","Corporate Bond Funds","REITs","Gold","Private Credit / Debt AIF","Farmland / Agro Real Assets","Digital Asset Basket (tiny)"],
+    "Risk": ["High","High","High","Moderate","Moderate","Moderate","Moderate","Mod–High","Moderate","High"],
+    "Returns (%)": ["8–12","10–15","7–12","7–10","6–9","6–10","3–8","8–12","4–8","Varies"],
+    "Horizon": ["7–10 yrs","7–12 yrs","7–10 yrs","5–8 yrs","3–7 yrs","5–10 yrs","3–7 yrs","3–7 yrs","5–15 yrs","5–10 yrs"],
+    "Purpose": ["Growth","Alpha","Diversification","Smoother volatility","Income stability","Property income","Hedge","Enhanced yield","Real assets","Asymmetric payoff"],
+    "Allocation (%)": [25,15,10,10,10,7,5,5,5,3]
 }
-
 HIGH_DATA = {
-    "Asset Class": ["Domestic Equity (Large/Mid/Small)", "International Equities", "Venture Capital / Startup Investments",
-                    "Private Equity Funds", "Crypto / Blockchain Assets", "Commodities (Energy/Metals ETFs)", "Real Assets (Timber/Renewables)",
-                    "Structured Products / Hedge Funds", "IP / Music Royalties", "Active Derivatives (Hedged)"],
-    "Risk": ["Very High"] * 10,
-    "Returns (%)": ["10–15", "8–15", "20+", "15+", "Highly variable", "Varies", "6–12", "Varies", "Variable", "Variable"],
-    "Horizon": ["10–20 yrs"] * 10,
-    "Purpose": ["Primary growth source", "Global growth exposure", "High innovation upside", "Superior alpha potential", "Speculative moonshot", "Cycle & inflation hedge", "Alternative diversifier", "Non-correlated returns", "Uncorrelated cash-flows", "Tactical"],
-    "Allocation (%)": [50, 15, 10, 7, 5, 5, 3, 3, 1, 1]
+    "Asset Class": ["Domestic Equity (Large/Mid/Small)","International Equities","Venture Capital / Startup Investments","Private Equity Funds","Crypto / Blockchain Assets","Commodities (Energy/Metals ETFs)","Real Assets (Timber/Renewables)","Structured Products / Hedge Funds","IP / Music Royalties","Active Derivatives (Hedged)"],
+    "Risk": ["Very High"]*10,
+    "Returns (%)": ["10–15","8–15","20+","15+","Highly variable","Varies","6–12","Varies","Variable","Variable"],
+    "Horizon": ["10–20 yrs"]*10,
+    "Purpose": ["Primary growth","Global growth","High innovation upside","Superior alpha","Speculative","Cycle hedge","Alternative diversifier","Non-correlated","Uncorrelated cashflows","Tactical"],
+    "Allocation (%)": [50,15,10,7,5,5,3,3,1,1]
 }
 
 profiles = {
-    "Low Risk Profile": pd.DataFrame(LOW_DATA),
-    "Moderate Risk Profile": pd.DataFrame(MODERATE_DATA),
-    "High Risk Profile": pd.DataFrame(HIGH_DATA),
+    "Low Risk (45–65 yrs)" : pd.DataFrame(LOW_DATA),
+    "Moderate Risk (30–45 yrs)" : pd.DataFrame(MODERATE_DATA),
+    "High Risk (25–30 yrs)" : pd.DataFrame(HIGH_DATA)
 }
 
 # -------------------------
-# Sidebar controls
+# Sidebar: profile selections (dropdowns), age group, investment objective (dropdown)
 # -------------------------
-st.sidebar.header("Profile & Controls")
-selected_profile = st.sidebar.selectbox("Choose portfolio profile", list(profiles.keys()))
+st.sidebar.header("Investor Profile")
+selected_profile = st.sidebar.selectbox("Risk Profile", list(profiles.keys()))
+age_group = st.sidebar.selectbox("Age Group", ["25-30", "30-45", "45-65"], index=1)
+investment_objective = st.sidebar.selectbox("Investment Objective", ["Growth", "Income", "Retirement", "Tax Saving", "Short-Term"], index=0)
 
-uploaded = st.sidebar.file_uploader("Upload CSV to replace this profile (optional)", type=["csv"])
-if uploaded is not None:
-    try:
-        df_upload = pd.read_csv(uploaded)
-        required_cols = {"Asset Class", "Allocation (%)", "Returns (%)"}
-        if not required_cols.issubset(set(df_upload.columns)):
-            st.sidebar.error(f"CSV must contain: {', '.join(required_cols)}")
-        else:
-            profiles[selected_profile] = df_upload.copy()
-            st.sidebar.success("CSV loaded for selected profile.")
-    except Exception as e:
-        st.sidebar.error(f"CSV read error: {e}")
+# when profile changes, play soft click (if enabled)
+play_click()
 
-# store current df in session
+# load current df into session state
 if "profile_name" not in st.session_state or st.session_state.profile_name != selected_profile:
     st.session_state.profile_name = selected_profile
     st.session_state.current_df = profiles[selected_profile].copy()
 
+# upload CSV to replace profile
 st.sidebar.markdown("---")
-if st.sidebar.button("Reset to default for profile"):
+uploaded = st.sidebar.file_uploader("Upload CSV to replace this profile (optional)", type=["csv"])
+if uploaded is not None:
+    try:
+        df_up = pd.read_csv(uploaded)
+        required = {"Asset Class","Allocation (%)","Returns (%)"}
+        if not required.issubset(set(df_up.columns)):
+            st.sidebar.error(f"CSV must contain: {', '.join(required)}")
+        else:
+            st.session_state.current_df = df_up.copy()
+            st.sidebar.success("Uploaded and loaded for current profile.")
+            play_click()
+    except Exception as e:
+        st.sidebar.error(f"CSV read error: {e}")
+
+st.sidebar.markdown("---")
+if st.sidebar.button("Reset profile defaults"):
     st.session_state.current_df = profiles[selected_profile].copy()
-    st.sidebar.success("Reset completed.")
-
-st.sidebar.markdown("---")
-show_icons = st.sidebar.checkbox("Show icons legend", value=True)
+    st.sidebar.success("Reset to defaults.")
+    play_click()
 
 # -------------------------
-# Editor with fallback (safe)
+# Main layout: left column controls, right column charts
 # -------------------------
-st.header(f"Selected Profile — {selected_profile}")
-st.markdown("Edit inline (if supported) or use the manual fallback form. Click **Apply changes** to save edits.")
+st.markdown("<div class='card'>", unsafe_allow_html=True)
+left, right = st.columns((1.2, 1))
 
-edited_df = None
-editor_mode = None
+with left:
+    st.subheader("Portfolio Editor")
+    st.markdown("Pick an asset below to edit its fields using dropdowns (no free typing). This ensures valid selectable values.")
+    # Select asset to edit
+    asset_list = st.session_state.current_df["Asset Class"].tolist()
+    selected_asset = st.selectbox("Select Asset to edit", options=asset_list)
+    # fetch row
+    row_idx = st.session_state.current_df.index[st.session_state.current_df["Asset Class"] == selected_asset].tolist()[0]
+    row = st.session_state.current_df.loc[row_idx].copy()
 
-try:
-    if hasattr(st, "data_editor"):
-        edited_df = st.data_editor(st.session_state.current_df, num_rows="dynamic")
-        editor_mode = "data_editor"
-    elif hasattr(st, "experimental_data_editor"):
-        edited_df = st.experimental_data_editor(st.session_state.current_df, num_rows="dynamic")
-        editor_mode = "experimental_data_editor"
-    else:
-        raise AttributeError
-except Exception:
-    editor_mode = "manual"
-    st.warning("Inline editor unavailable — using manual edit form.")
-    manual_df = st.session_state.current_df.copy()
-    with st.form("manual_edit_form"):
-        rows = []
-        for i, row in manual_df.iterrows():
-            st.markdown(f"**Row {i+1} — {row.get('Asset Class','')}**")
-            ac = st.text_input(f"Asset Class [{i}]", value=str(row.get("Asset Class", "")))
-            rsk = st.text_input(f"Risk [{i}]", value=str(row.get("Risk", "")))
-            ret = st.text_input(f"Returns (%) [{i}]", value=str(row.get("Returns (%)", "")))
-            hor = st.text_input(f"Horizon [{i}]", value=str(row.get("Horizon", "")))
-            purp = st.text_input(f"Purpose [{i}]", value=str(row.get("Purpose", "")))
-            alloc = st.number_input(f"Allocation (%) [{i}]", value=float(row.get("Allocation (%)", 0.0)), step=0.1, key=f"alloc_{i}")
-            rows.append({"Asset Class": ac, "Risk": rsk, "Returns (%)": ret, "Horizon": hor, "Purpose": purp, "Allocation (%)": alloc})
-            st.markdown("---")
-        submitted_manual = st.form_submit_button("Submit manual edits")
-    if submitted_manual:
-        edited_df = pd.DataFrame(rows)
+    # Dropdown selects for fields instead of free text
+    risk_options = ["Very Low","Low","Low–Mod","Moderate","Mod–High","High","Very High"]
+    horizon_options = sorted(list(set(st.session_state.current_df["Horizon"].dropna().tolist())) )
+    if not horizon_options:
+        horizon_options = ["1–3 yrs","3–5 yrs","5–10 yrs","10+ yrs"]
+    purpose_options = sorted(list(set(st.session_state.current_df["Purpose"].dropna().tolist())))
+    if not purpose_options:
+        purpose_options = ["Income","Growth","Retirement","Tax Saving","Hedge"]
 
-if edited_df is not None:
-    if st.button("Apply changes"):
-        if "Allocation (%)" in edited_df.columns:
-            edited_df["Allocation (%)"] = pd.to_numeric(edited_df["Allocation (%)"], errors="coerce").fillna(0.0)
-        st.session_state.current_df = edited_df.copy()
-        st.success("Changes applied.")
-    else:
-        st.info(f"Editor mode: {editor_mode}. After editing, click 'Apply changes'.")
+    new_risk = st.selectbox("Risk", options=risk_options, index=risk_options.index(row["Risk"]) if row["Risk"] in risk_options else 0)
+    new_horizon = st.selectbox("Horizon", options=horizon_options, index=0)
+    new_purpose = st.selectbox("Purpose", options=purpose_options, index=0)
+    # Reward input: allow a range string or numeric expected return
+    new_return = st.text_input("Returns (%) (e.g. 4–7 or 6.5)", value=str(row.get("Returns (%)","")))
+    new_alloc = st.number_input("Allocation (%)", min_value=0.0, max_value=100.0, value=float(row.get("Allocation (%)",0.0)), step=0.1)
 
-# Normalize & download
-col_norm, col_dl = st.columns([1, 1])
-with col_norm:
+    col_apply, col_del = st.columns([1,1])
+    with col_apply:
+        if st.button("Apply changes to asset"):
+            st.session_state.current_df.at[row_idx, "Risk"] = new_risk
+            st.session_state.current_df.at[row_idx, "Horizon"] = new_horizon
+            st.session_state.current_df.at[row_idx, "Purpose"] = new_purpose
+            st.session_state.current_df.at[row_idx, "Returns (%)"] = new_return
+            st.session_state.current_df.at[row_idx, "Allocation (%)"] = new_alloc
+            st.success(f"Updated {selected_asset}")
+            play_click()
+    with col_del:
+        if st.button("Remove asset"):
+            st.session_state.current_df = st.session_state.current_df.drop(index=row_idx).reset_index(drop=True)
+            st.success(f"Removed {selected_asset}")
+            play_click()
+
+    st.markdown("---")
+    # Add new asset form (with dropdown-guided fields)
+    st.markdown("Add new asset")
+    new_asset_name = st.text_input("Asset Class name", value="")
+    new_asset_risk = st.selectbox("Risk (new)", options=risk_options, index=1)
+    new_asset_horizon = st.selectbox("Horizon (new)", options=horizon_options, index=0)
+    new_asset_purpose = st.selectbox("Purpose (new)", options=purpose_options, index=0)
+    new_asset_return = st.text_input("Returns (%) (new)", value="")
+    new_asset_alloc = st.number_input("Allocation (%) (new)", min_value=0.0, max_value=100.0, value=0.0, step=0.1)
+    if st.button("Add asset to portfolio"):
+        if new_asset_name.strip() == "":
+            st.error("Provide asset class name.")
+        else:
+            row_new = {
+                "Asset Class": new_asset_name.strip(),
+                "Risk": new_asset_risk,
+                "Returns (%)": new_asset_return,
+                "Horizon": new_asset_horizon,
+                "Purpose": new_asset_purpose,
+                "Allocation (%)": float(new_asset_alloc)
+            }
+            st.session_state.current_df = pd.concat([st.session_state.current_df, pd.DataFrame([row_new])], ignore_index=True)
+            st.success(f"Added {new_asset_name}")
+            play_click()
+
+    st.markdown("---")
+    # Normalize & Apply buttons
     if st.button("Normalize allocations to 100%"):
-        total = st.session_state.current_df.get("Allocation (%)", pd.Series(dtype=float)).sum()
+        total = st.session_state.current_df["Allocation (%)"].sum()
         if total == 0:
             st.error("Total allocation is 0 — cannot normalize.")
         else:
-            st.session_state.current_df["Allocation (%)"] = (st.session_state.current_df["Allocation (%)"] / total * 100.0).round(2)
+            st.session_state.current_df["Allocation (%)"] = (st.session_state.current_df["Allocation (%)"] / total * 100).round(2)
             st.success("Allocations normalized to 100%")
-with col_dl:
+            play_click()
+
+    # CSV download & show table
     csv_buf = st.session_state.current_df.to_csv(index=False)
-    st.download_button("Download current table (CSV)", data=csv_buf, file_name=f"{selected_profile.replace(' ','_')}.csv", mime="text/csv")
+    st.download_button("Download current portfolio (CSV)", data=csv_buf, file_name=f"{selected_profile.replace(' ','_')}.csv", mime="text/csv")
 
-# Show current table
-st.subheader("Current Portfolio Table")
-if show_icons:
-    st.markdown("""
-    <div style="display:flex;gap:12px;align-items:center;margin-bottom:8px;">
-      <div style="display:flex;flex-direction:column;align-items:center;"><div style="font-size:18px">💵</div><small class="small-muted">Debt</small></div>
-      <div style="display:flex;flex-direction:column;align-items:center;"><div style="font-size:18px">📈</div><small class="small-muted">Equity</small></div>
-      <div style="display:flex;flex-direction:column;align-items:center;"><div style="font-size:18px">🏠</div><small class="small-muted">Real Assets</small></div>
-      <div style="display:flex;flex-direction:column;align-items:center;"><div style="font-size:18px">🟨</div><small class="small-muted">Alternatives</small></div>
-    </div>
-    """, unsafe_allow_html=True)
+    st.markdown("Current portfolio (editable via asset editor above)")
+    st.dataframe(st.session_state.current_df.reset_index(drop=True), use_container_width=True)
 
-st.dataframe(st.session_state.current_df.reset_index(drop=True), use_container_width=True)
+with right:
+    st.subheader("Visual Dashboard")
+    # quick metrics
+    total_alloc = st.session_state.current_df["Allocation (%)"].sum()
+    # Parse returns to numeric where possible
+    def parse_return_value(val):
+        if pd.isna(val): return None
+        if isinstance(val, (int,float)): return float(val)
+        s = str(val).strip().replace("%","").replace("–","-").replace("—","-")
+        if "+" in s:
+            s = s.replace("+","")
+            try: return float(s)
+            except: return None
+        if "-" in s:
+            parts = s.split("-")
+            try:
+                nums = [float(p) for p in parts if p!=""]
+                if len(nums)>=2: return (nums[0]+nums[1])/2.0
+            except: return None
+        try: return float(s)
+        except: return None
 
-# -------------------------
-# Helpers: parse returns string -> numeric average
-# -------------------------
-def parse_return_value(val):
-    if pd.isna(val):
-        return None
-    if isinstance(val, (int, float)):
-        return float(val)
-    s = str(val).strip().replace("%", "").replace("–", "-").replace("—", "-")
-    if "+" in s:
-        try:
-            return float(s.replace("+", ""))
-        except:
-            return None
-    if "-" in s:
-        parts = s.split("-")
-        try:
-            nums = [float(p) for p in parts if p != ""]
-            if len(nums) >= 2:
-                return (nums[0] + nums[1]) / 2.0
-        except:
-            return None
-    try:
-        return float(s)
-    except:
-        return None
-
-df_calc = st.session_state.current_df.copy()
-df_calc["_ParsedReturn"] = df_calc.get("Returns (%)", pd.Series()).apply(parse_return_value)
-total_alloc = df_calc.get("Allocation (%)", pd.Series(dtype=float)).sum()
-if total_alloc > 0 and df_calc["_ParsedReturn"].notna().any():
-    weighted_sum = (df_calc.loc[df_calc["_ParsedReturn"].notna(), "_ParsedReturn"] * df_calc.loc[df_calc["_ParsedReturn"].notna(), "Allocation (%)"]).sum()
-    weighted_avg_return = weighted_sum / total_alloc
-else:
+    df_calc = st.session_state.current_df.copy()
+    df_calc["_ParsedReturn"] = df_calc["Returns (%)"].apply(parse_return_value)
     weighted_avg_return = None
+    if total_alloc > 0 and df_calc["_ParsedReturn"].notna().any():
+        weighted_avg_return = (df_calc.loc[df_calc["_ParsedReturn"].notna(), "_ParsedReturn"] * df_calc.loc[df_calc["_ParsedReturn"].notna(), "Allocation (%)"]).sum() / total_alloc
 
-# -------------------------
-# Filters (view-only)
-# -------------------------
-st.sidebar.markdown("---")
-st.sidebar.subheader("Filters (view only)")
-horizons = sorted(st.session_state.current_df.get("Horizon", pd.Series()).dropna().unique().tolist())
-selected_horizons = st.sidebar.multiselect("Horizon", options=horizons, default=horizons if horizons else [])
-purposes = sorted(st.session_state.current_df.get("Purpose", pd.Series()).dropna().unique().tolist())
-selected_purposes = st.sidebar.multiselect("Purpose", options=purposes, default=purposes if purposes else [])
+    c1, c2 = st.columns(2)
+    with c1:
+        st.metric("Total Allocation (%)", f"{total_alloc:.2f}")
+    with c2:
+        st.metric("Weighted Avg Return (%)", f"{weighted_avg_return:.2f}" if weighted_avg_return is not None else "N/A")
 
-view_df = st.session_state.current_df.copy()
-if selected_horizons:
-    view_df = view_df[view_df["Horizon"].isin(selected_horizons)]
-if selected_purposes:
-    view_df = view_df[view_df["Purpose"].isin(selected_purposes)]
+    st.markdown("---")
+    # Charts: donut + 3D scatter/bar (Plotly if available)
+    if PLOTLY_OK:
+        # Donut
+        st.markdown("**Donut: Allocation (%)**")
+        fig_donut = px.pie(st.session_state.current_df, names="Asset Class", values="Allocation (%)", hole=0.45,
+                           title="Portfolio Allocation (Donut)", color_discrete_sequence=px.colors.sequential.Tealgrn)
+        fig_donut.update_traces(textinfo="percent+label", textposition="inside")
+        st.plotly_chart(fig_donut, use_container_width=True)
 
-st.subheader("Filtered View")
-st.dataframe(view_df.reset_index(drop=True), use_container_width=True)
-
-# -------------------------
-# Summary metrics and typing-insight (silent)
-# -------------------------
-st.subheader("Portfolio Summary & Metrics")
-c1, c2, c3 = st.columns(3)
-with c1:
-    st.metric("Total Allocation (%)", f"{total_alloc:.2f}")
-with c2:
-    st.metric("Weighted Avg Return (%)", f"{weighted_avg_return:.2f}" if weighted_avg_return is not None else "N/A")
-with c3:
-    rc = st.session_state.current_df.get("Risk", pd.Series()).value_counts().to_dict()
-    top_risk = max(rc, key=rc.get) if rc else "N/A"
-    st.metric("Dominant Risk Type", str(top_risk))
-
-insight_text = ""
-if weighted_avg_return is not None:
-    if weighted_avg_return < 6:
-        insight_text = "Conservative portfolio — lower expected returns."
-    elif weighted_avg_return < 10:
-        insight_text = "Balanced portfolio — blend of safety and growth."
+        # 3D scatter (Risk category numeric vs Parsed Return vs Allocation)
+        st.markdown("**3D: Risk vs Return vs Allocation (interactive)**")
+        unique_risks = list(st.session_state.current_df["Risk"].unique())
+        risk_map = {r: i+1 for i,r in enumerate(unique_risks)}
+        plot_df = df_calc.copy()
+        plot_df["RiskNum"] = plot_df["Risk"].map(risk_map).fillna(0)
+        fig_3d = go.Figure(data=[go.Scatter3d(
+            x=plot_df["RiskNum"],
+            y=plot_df["_ParsedReturn"],
+            z=plot_df["Allocation (%)"],
+            text=plot_df["Asset Class"],
+            mode='markers',
+            marker=dict(size=np.clip(plot_df["Allocation (%)"]*0.6, 6, 40), color=plot_df["_ParsedReturn"], colorscale='Viridis', showscale=True)
+        )])
+        fig_3d.update_layout(scene=dict(xaxis=dict(title="Risk (categorical)"), yaxis=dict(title="Parsed Return (%)"), zaxis=dict(title="Allocation (%)")), margin=dict(l=0,r=0,b=0,t=30))
+        st.plotly_chart(fig_3d, use_container_width=True)
     else:
-        insight_text = "Aggressive portfolio — higher expected returns with higher volatility."
-else:
-    insight_text = "Weighted return not available — check numeric Returns (%) values."
+        st.warning("Plotly not installed — showing fallback charts (Streamlit simple charts). Add 'plotly' to requirements.txt for interactive 3D visuals.")
+        st.markdown("Allocation (fallback bar chart)")
+        st.bar_chart(st.session_state.current_df.set_index("Asset Class")["Allocation (%)"])
 
-insight_html = f"""
-<div id="typed_ins" style="font-family:Inter, Roboto, Arial; font-size:16px; color:#dffaff; font-weight:600;"></div>
-<script>
-const txt = {insight_text!r};
-let j = 0;
-function typeIns() {{
-  if (j < txt.length) {{
-    document.getElementById('typed_ins').innerHTML += txt.charAt(j);
-    j++;
-    setTimeout(typeIns, 25);
-  }}
-}}
-typeIns();
-</script>
-"""
-st.components.v1.html(insight_html, height=50)
-
-# -------------------------
-# Visuals: SVG Donut and SVG faux 3D bar
-# -------------------------
-
-def make_svg_donut(labels, values, size=360, hole_ratio=0.6, colors=None):
-    total = sum(values) if sum(values) > 0 else 1
-    cx = cy = size / 2
-    r = size * 0.4
-    inner_r = r * hole_ratio
-    start_angle = 0
-    paths = []
-    if colors is None:
-        # generate palette
-        base_colors = ["#06b6b4","#0891b2","#0ea5a4","#06b6b4","#a3e635","#60a5fa","#f59e0b","#fb7185","#a78bfa","#34d399"]
+    st.markdown("---")
+    # Projection calculator
+    st.subheader("Projection Calculator")
+    initial = st.number_input("Initial investment (₹)", min_value=1000.0, value=100000.0, step=1000.0)
+    years = st.selectbox("Years", [1,3,5,10], index=1)
+    if total_alloc <= 0:
+        st.warning("Set allocations to compute projections.")
     else:
-        base_colors = colors
-    for i, v in enumerate(values):
-        angle = 360.0 * v / total
-        end_angle = start_angle + angle
-        # convert to radians
-        sa = math.radians(start_angle)
-        ea = math.radians(end_angle)
-        x1 = cx + r * math.cos(sa)
-        y1 = cy + r * math.sin(sa)
-        x2 = cx + r * math.cos(ea)
-        y2 = cy + r * math.sin(ea)
-        large = 1 if angle > 180 else 0
-        path = f"M {cx} {cy} L {x1} {y1} A {r} {r} 0 {large} 1 {x2} {y2} Z"
-        # text position (mid angle)
-        mid = math.radians(start_angle + angle / 2.0)
-        tx = cx + (r + 20) * math.cos(mid)
-        ty = cy + (r + 20) * math.sin(mid)
-        paths.append({
-            "path": path,
-            "color": base_colors[i % len(base_colors)],
-            "label": labels[i],
-            "pct": f"{(v/total*100):.1f}%",
-            "tx": tx,
-            "ty": ty
-        })
-        start_angle = end_angle
-    # create SVG string
-    svg_parts = [f"<svg width='{size}' height='{size}' viewBox='0 0 {size} {size}' xmlns='http://www.w3.org/2000/svg'>"]
-    # slices
-    for p in paths:
-        svg_parts.append(f"<path d=\"{p['path']}\" fill=\"{p['color']}\" stroke='#031226' stroke-width='0.5'/>")
-    # inner circle
-    svg_parts.append(f"<circle cx='{cx}' cy='{cy}' r='{inner_r}' fill='#031226'/>")
-    # labels as simple legend under svg (we will not overlay many labels to avoid clutter)
-    svg_parts.append("</svg>")
-    # create an HTML legend
-    legend_html = "<div style='display:flex;flex-direction:column;gap:6px;margin-top:8px;'>"
-    for p in paths:
-        legend_html += f"<div style='display:flex;align-items:center;gap:8px;'><div style='width:12px;height:12px;border-radius:3px;background:{p['color']}'></div><div style='font-size:13px;color:#dffaff'>{p['label']} - {p['pct']}</div></div>"
-    legend_html += "</div>"
-    return "".join(svg_parts), legend_html
-
-def make_svg_3d_bars(labels, values, width=600, height=340):
-    # simple faux-3d using skew and gradient rectangles; values normalized
-    maxv = max(values) if max(values) > 0 else 1
-    bar_w = max(26, int((width - 160) / len(labels)))
-    gap = 10
-    svg = [f"<svg width='{width}' height='{height}' viewBox='0 0 {width} {height}' xmlns='http://www.w3.org/2000/svg'>"]
-    # background
-    svg.append(f"<rect width='100%' height='100%' fill='transparent' />")
-    base_x = 60
-    base_y = height - 40
-    for i, (lab, val) in enumerate(zip(labels, values)):
-        h = (val / maxv) * (height - 120)
-        x = base_x + i * (bar_w + gap)
-        y = base_y - h
-        # shadow/back face
-        svg.append(f"<rect x='{x+8}' y='{y+8}' width='{bar_w}' height='{h}' fill='rgba(0,0,0,0.12)' rx='4' />")
-        # main bar
-        svg.append(f"<rect x='{x}' y='{y}' width='{bar_w}' height='{h}' fill='#06b6b4' rx='4' />")
-        # top highlight
-        svg.append(f"<rect x='{x}' y='{y}' width='{bar_w}' height='{6}' fill='rgba(255,255,255,0.15)' />")
-        # label (rotated)
-        svg.append(f"<text x='{x + bar_w/2}' y='{base_y + 14}' font-size='11' fill='#dffaff' text-anchor='middle' transform='rotate(0 {x + bar_w/2} {base_y + 14})'>{lab}</text>")
-        svg.append(f"<text x='{x + bar_w/2}' y='{y - 6}' font-size='12' fill='#e6fffa' text-anchor='middle'>{val:.1f}%</text>")
-    svg.append("</svg>")
-    return "".join(svg)
-
-# Render donut + legend
-labels = st.session_state.current_df["Asset Class"].tolist()
-values = st.session_state.current_df["Allocation (%)"].fillna(0).tolist()
-
-col_a, col_b = st.columns([1, 1])
-with col_a:
-    st.markdown("**Allocation — Donut (SVG)**")
-    svg_str, legend_html = make_svg_donut(labels, values, size=360, hole_ratio=0.58)
-    st.markdown(f"<div class='svg-card'>{svg_str}{legend_html}</div>", unsafe_allow_html=True)
-
-with col_b:
-    st.markdown("**3D Style Allocation Bars (SVG)**")
-    svg3 = make_svg_3d_bars(labels, values, width=680, height=340)
-    st.markdown(f"<div class='svg-card'>{svg3}</div>", unsafe_allow_html=True)
+        proj_df = df_calc.copy()
+        proj_df["Weight"] = proj_df["Allocation (%)"] / total_alloc
+        fallback = proj_df["_ParsedReturn"].median() if proj_df["_ParsedReturn"].notna().any() else 6.0
+        proj_df["_UseReturn"] = proj_df["_ParsedReturn"].fillna(fallback)
+        port_ret = (proj_df["_UseReturn"] * proj_df["Weight"]).sum() / 100.0
+        future_val = initial * ((1 + port_ret) ** years)
+        st.metric(f"Projected value in {years} yrs", f"₹{future_val:,.0f}")
+        st.caption(f"Avg annual return used: {port_ret*100:.2f}% (fallback for non-numeric: {fallback:.2f}%)")
 
 # -------------------------
-# Projection calculator
+# Automatic insights (fade-in)
 # -------------------------
-st.markdown("---")
-st.subheader("Projection Calculator (1 / 3 / 5 / 10 yrs)")
-initial = st.number_input("Initial investment (₹)", min_value=1000.0, value=100000.0, step=1000.0)
-yrs = st.selectbox("Projection horizon (years)", [1, 3, 5, 10], index=1)
-
-proj_df = df_calc.copy()
-total_alloc_now = proj_df["Allocation (%)"].sum()
-if total_alloc_now <= 0:
-    st.warning("Allocations sum to 0 — set allocations before projecting returns.")
-else:
-    proj_df["Weight"] = proj_df["Allocation (%)"] / total_alloc_now
-    fallback = proj_df["_ParsedReturn"].median() if proj_df["_ParsedReturn"].notna().any() else 6.0
-    proj_df["_UseReturn"] = proj_df["_ParsedReturn"].fillna(fallback)
-    portfolio_return_decimal = (proj_df["_UseReturn"] * proj_df["Weight"]).sum() / 100.0
-    future_val = initial * ((1 + portfolio_return_decimal) ** yrs)
-    st.metric(f"Projected value after {yrs} years", f"₹{future_val:,.0f}")
-    st.caption(f"Portfolio avg annual return used: {portfolio_return_decimal*100:.2f}% (fallback {fallback:.2f}% where needed)")
-
-# -------------------------
-# Automatic insights
-# -------------------------
-st.markdown("---")
-st.subheader("Automatic Insights")
+st.markdown("<hr/>", unsafe_allow_html=True)
 insights = []
 if total_alloc < 90:
-    insights.append("Total allocation < 90% — consider deploying idle cash or adjust allocations.")
+    insights.append("Total allocation less than 90% — consider deploying idle cash.")
 if total_alloc > 110:
-    insights.append("Total allocation > 110% — allocations not normalized.")
+    insights.append("Total allocation exceeds 110% — allocations not normalized.")
 if weighted_avg_return is not None:
     if weighted_avg_return < 6:
-        insights.append("Conservative expected returns (<6%).")
+        insights.append("Conservative profile expected (low returns).")
     elif weighted_avg_return < 10:
-        insights.append("Balanced expected returns (6–10%).")
+        insights.append("Balanced expected returns (moderate).")
     else:
-        insights.append("Aggressive expected returns (>10%).")
+        insights.append("Aggressive expected returns (higher, with volatility).")
+
 if not st.session_state.current_df.empty:
     top_idx = st.session_state.current_df["Allocation (%)"].idxmax()
     top_asset = st.session_state.current_df.loc[top_idx, "Asset Class"]
     top_alloc = st.session_state.current_df.loc[top_idx, "Allocation (%)"]
     if top_alloc >= 35:
-        insights.append(f"High concentration: {top_asset} at {top_alloc:.1f}% allocation.")
+        insights.append(f"High concentration: {top_asset} has {top_alloc:.1f}% allocation — consider diversification.")
 
-if insights:
-    for it in insights:
-        st.info(it)
-else:
-    st.write("No immediate insights — portfolio looks balanced.")
+# Fade-in insight text (JS)
+first_insight = insights[0] if insights else "Portfolio looks balanced — no immediate actions required."
+insight_js = f"""
+<div id="ins-fade" style="opacity:0; transition: opacity 700ms ease-out; font-weight:600; color:#dffaff;"></div>
+<script>
+setTimeout(()=>{{ document.getElementById('ins-fade').innerText = {first_insight!r}; document.getElementById('ins-fade').style.opacity = 1; }}, 220);
+</script>
+"""
+st.components.v1.html(insight_js, height=40)
+for it in insights:
+    st.info(it)
 
 st.markdown("---")
-st.caption("SVG-safe professional app — uses only Streamlit + Pandas so it runs without Plotly/Matplotlib.")
+st.caption("Built: Premium Classic Blue · Fade-in animations · selectable profile fields · interactive charts (Plotly) when available.")
 
